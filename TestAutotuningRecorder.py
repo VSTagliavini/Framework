@@ -1,9 +1,8 @@
 import random
 import numpy as np
-import time
 import math
 
-from optimization_recorder import Optimizer, Recorder
+from optimization_recorder import Optimizer, OptimizationRecorder
 
 def roulette(population, reproductors):
         breeders = []
@@ -460,15 +459,15 @@ ps = PS(50, 0.5, 0.5, 0.5)
 ps.SetName('ParticleSwarm')
 sa = SA(500, 5, False)
 sa.SetName('SimulatedAnnealing')
-bh = BH(50, 0.9, 0.01)
+bh = BH(0, 0.9, 0.01)
 bh.SetName('BasinHopping')
 nm = NM(1, 2, 0.5, 0.5)
 nm.SetName('NelderMead')
 
-autotuning_algorithms = [de, ps, sa, bh, nm]#[ga, de, ps, sa, bh, nm]
+autotuning_algorithms = [ga]#, de, ps, sa, bh, nm]
 
-recorder = Recorder('Laptop', testfunction, 8, measure_optimizing_history=True, measure_time=True, measure_memory=True, measure_energy=True, measure_temperature=True, database=None)
+recorder = OptimizationRecorder('Laptop', testfunction, 8, measure_optimizing_history=True, measure_time=True, measure_memory=True, measure_energy=True, measure_temperature=True, database=None)
 for algorithm in autotuning_algorithms:
     recorder.SetAutotuningAlgorithm(algorithm)
-    recorder.Optimize(500, 'executions', 22)
+    recorder.Optimize(500, 'executions', 5)
 
