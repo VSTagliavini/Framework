@@ -1,5 +1,7 @@
 import os
 import re
+import psutil
+import platform
 import sqlite3 as sql
 import pandas as pd
 from pathlib import Path
@@ -55,24 +57,47 @@ def CheckString(name, function):
         special_characters = set(re.findall(r"[^a-zA-Z0-9\s]", name))
         raise Exception(f'{function} must be an alphanumeric string, received string with {special_characters}')
 
-class DatabaseManager:
-    #Checar se banco de dados existe e o criar caso contrário
-    #Conectar ao banco de dados e salvar conexão para uso futuro
-    def __init__(self, database='database/default_db'):
-        if not isinstance(database, str):
-            raise Exception(f'database must be str, received {type(database)}')
-        self.database = database
+def GetMachine(device_name):
+        net_stats = psutil.net_if_stats()
+        net_speeds = [net_stats[a].mtu for a in net_stats]
+        while len(net_speeds) < 5:
+            net_speeds.append(0)
+        
+        m = {
+            'NAME':                     device_name,
+            'OS':                       platform.system()[0:32],
+            'RELEASE':                  platform.release()[0:32],
+            'VERSION':                  platform.version()[0:32],
+            'PROCESSOR_ARCHITECTURE1':  platform.architecture()[0][0:32],
+            'PROCESSOR_ARCHITECTURE2':  platform.architecture()[1][0:32],
+            'INSTRUCTION_SET':          platform.machine()[0:32],
+            'CPU_CORES':                psutil.cpu_count(),
+            'MEMORY':                   psutil.virtual_memory().total,
+            'NIC0':                     net_speeds[0],
+            'NIC1':                     net_speeds[1],
+            'NIC2':                     net_speeds[2],
+            'NIC3':                     net_speeds[3],
+            'NIC4':                     net_speeds[4],
+        }
+        return m
 
-        if not os.path.isfile(self.database):
-            print('database does not exists')
+class DatabaseManager:
+    def __init__(self, database='default'):
+        #Checar se banco de dados existe e o criar caso contrário
+        #Conectar ao banco de dados e salvar conexão para uso futuro
+        CheckString(database, 'database')
+        self.database = 'database/' + database
+
+        if not os.path.isfile(self.database+'db'):
+            print(f'Creating database {self.database}')
             self._initialize_tables()
         else:
-            print('database exist')
-        self.db = sql.connect(self.database)
+            print(f'Connecting to database {self.database}')
+        self.db = sql.connect(self.database+'db')
         self.cursor = self.db.cursor()
 
     def _initialize_tables(self):
-        db = sql.connect(self.database)
+        db = sql.connect(self.database+'db')
         cursor = db.cursor()
         query = """
             CREATE TABLE MACHINES(
@@ -123,11 +148,17 @@ class DatabaseManager:
         query = f"""
             CREATE TABLE APPROXIMATIONS(
                 ID          INTEGER PRIMARY KEY,
-                PROGRAM     INTEGER,
-                DATASET     INTEGER,
-                TECHNIQUE   INTEGER,
+                PROGRAM                 INTEGER,
+                TRAINING_DATASET        INTEGER,
+                TESTING_DATASET         INTEGER,
+                TECHNIQUE               INTEGER,
+                TRAINING_TIME           INTEGER,
+                TRAINING_ENERGY         INTEGER,
+                TRAINING_TEMPERATURE    INTEGER,
+                TRAINING_MEMORY         INTEGER,
                 FOREIGN KEY (PROGRAM) REFERENCES PROGRAMS(ID),
-                FOREIGN KEY (DATASET) REFERENCES DATASETS(ID),
+                FOREIGN KEY (TRAINING_DATASET) REFERENCES DATASETS(ID),
+                FOREIGN KEY (TESTING_DATASET) REFERENCES DATASETS(ID),
                 FOREIGN KEY (TECHNIQUE) REFERENCES APPROXIMATION_TECHNIQUES(ID)
             );
         """
@@ -135,8 +166,7 @@ class DatabaseManager:
 
         query = f"""
             CREATE TABLE APPROXIMATION_METRICS(
-                APPROXIMATION   INTEGER PRIMARY KEY,
-                TEMPORARY       INTEGER,
+                APPROXIMATION           INTEGER PRIMARY KEY,
                 --MISCELANEOUS METRICS
                 FOREIGN KEY (APPROXIMATION) REFERENCES APPROXIMATIONS(ID)
             );
@@ -280,7 +310,7 @@ class DatabaseManager:
         children = self.cursor.fetchall()
         children = [child[0] for child in children]
         for child in children:
-            self.RemoveTrainingData(child)
+            self.RemoveDataset(child)
         query = f"""SELECT (ID) FROM OPTIMIZATIONS WHERE PROGRAM={ID};"""
         self.cursor.execute(query)
         children = self.cursor.fetchall()
@@ -289,7 +319,6 @@ class DatabaseManager:
             self.RemoveAutotuningHist(child)
 
         query = f"""DELETE FROM MACHINES WHERE ID={ID};"""
-        print(query)
         self.cursor.execute(query)
         self.db.commit()
 
@@ -319,7 +348,7 @@ class DatabaseManager:
         children = self.cursor.fetchall()
         children = [child[0] for child in children]
         for child in children:
-            self.RemoveTrainingData(child)
+            self.RemoveDataset(child)
         query = f"""SELECT (ID) FROM APPROXIMATIONS WHERE PROGRAM={ID};"""
         self.cursor.execute(query)
         children = self.cursor.fetchall()
@@ -334,7 +363,6 @@ class DatabaseManager:
             self.RemoveAutotuningHist(child)
 
         query = f"""DELETE FROM PROGRAMS WHERE ID={ID};"""
-        print(query)
         self.cursor.execute(query)
         self.db.commit()
 
@@ -367,7 +395,6 @@ class DatabaseManager:
             self.RemoveAutotuningHist(child)
 
         query = f"""DELETE FROM AUTOTUNING_TECHNIQUES WHERE ID={ID};"""
-        print(query)
         self.cursor.execute(query)
         self.db.commit()
 
@@ -410,14 +437,11 @@ class DatabaseManager:
         children = self.cursor.fetchall()
         children = [child[0] for child in children]
         for child in children:
-            self.RemoveTrainingData(child)
+            self.RemoveDataset(child)
 
         query = f"""DELETE FROM APPROXIMATION_TECHNIQUES WHERE ID={ID};"""
-        print(query)
         self.cursor.execute(query)
         self.db.commit()
-        #Implement later
-        #Remove approximation technique and all data that references it (APPROXIMATIONS, OPTIMIZATIONS)
 
     def InsertAutotuningHist(self, PROGRAM, AUTOTUNING_TECHNIQUE, MACHINE, APPROXIMATION_TECHNIQUE, DATASET, historic):
         if APPROXIMATION_TECHNIQUE == None:
@@ -429,9 +453,9 @@ class DatabaseManager:
         self.db.commit()
         id = self.cursor.lastrowid
 
-        path = f"""database/optimizations/{self.RetrieveProgram(PROGRAM)}/{self.RetrieveMachineData(MACHINE)['NAME']}/{self.RetrieveAutotuningTech(AUTOTUNING_TECHNIQUE)}/"""
+        path = f"""{self.database}/optimizations/{self.RetrieveProgram(PROGRAM)}/{self.RetrieveMachineData(MACHINE)['NAME']}/{self.RetrieveAutotuningTech(AUTOTUNING_TECHNIQUE)}/"""
         if APPROXIMATION_TECHNIQUE != 0:
-            path = path + f"""{self.RetrieveApproxTech(APPROXIMATION_TECHNIQUE)}/{self.RetrieveTrainingDataData(DATASET)}/"""
+            path = path + f"""{self.RetrieveApproxTech(APPROXIMATION_TECHNIQUE)}/{self.RetrieveDatasetData(DATASET)}/"""
         else:
             path = path + f"""NO_APPROXIMATION/"""
         Path(path).mkdir(parents=True, exist_ok=True)
@@ -443,9 +467,9 @@ class DatabaseManager:
     def RetrieveAutotuningHist(self, ID):
         query = f"""SELECT * FROM OPTIMIZATIONS WHERE ID = {ID};"""
         ans = self.cursor.execute(query).fetchone()
-        path = f"""database/optimizations/{self.RetrieveProgram(ans[1])}/{self.RetrieveMachineData(ans[3])['NAME']}/{self.RetrieveAutotuningTech(ans[2])}/"""
+        path = f"""{self.database}/optimizations/{self.RetrieveProgram(ans[1])}/{self.RetrieveMachineData(ans[3])['NAME']}/{self.RetrieveAutotuningTech(ans[2])}/"""
         if ans[4] != 0:
-            path = path + f"""{self.RetrieveApproxTech(ans[4])}/{self.RetrieveTrainingDataData(ans[5])}/"""
+            path = path + f"""{self.RetrieveApproxTech(ans[4])}/{self.RetrieveDatasetData(ans[5])}/"""
         else:
             path = path + f"""NO_APPROXIMATION/"""
         path = path + str(ID)
@@ -455,16 +479,16 @@ class DatabaseManager:
             'machine':          self.RetrieveMachineData(ans[3])['NAME'],
             'autotuning':       self.RetrieveAutotuningTech(ans[2]),
             'approximation':    self.RetrieveApproxTech(ans[4]) if ans[4] != 0 else 0,
-            'dataset':          self.RetrieveTrainingDataData(ans[5]) if ans[4] != 0 else 0,
+            'dataset':          self.RetrieveDatasetData(ans[5]) if ans[4] != 0 else 0,
             'data':             pd.read_parquet(path+'.parquet')
         }
         return data
     def RetrieveAutotuningHistData(self, ID):
         query = f"""SELECT * FROM OPTIMIZATIONS WHERE ID = {ID};"""
         ans = self.cursor.execute(query).fetchone()
-        path = f"""database/optimizations/{self.RetrieveProgram(ans[1])}/{self.RetrieveMachineData(ans[3])['NAME']}/{self.RetrieveAutotuningTech(ans[2])}/"""
+        path = f"""{self.database}/optimizations/{self.RetrieveProgram(ans[1])}/{self.RetrieveMachineData(ans[3])['NAME']}/{self.RetrieveAutotuningTech(ans[2])}/"""
         if ans[4] != 0:
-            path = path + f"""{self.RetrieveApproxTech(ans[4])}/{self.RetrieveTrainingDataData(ans[5])}/"""
+            path = path + f"""{self.RetrieveApproxTech(ans[4])}/{self.RetrieveDatasetData(ans[5])}/"""
         else:
             path = path + f"""NO_APPROXIMATION/"""
         path = path + str(ID)
@@ -474,7 +498,7 @@ class DatabaseManager:
             'machine':          self.RetrieveMachineData(ans[3])['NAME'],
             'autotuning':       self.RetrieveAutotuningTech(ans[2]),
             'approximation':    self.RetrieveApproxTech(ans[4]) if ans[4] != 0 else 0,
-            'dataset':          self.RetrieveTrainingDataData(ans[5]) if ans[4] != 0 else 0,
+            'dataset':          self.RetrieveDatasetData(ans[5]) if ans[4] != 0 else 0,
             'data':             path+'.parquet'
             }
     def RetrieveProgramAutotuning(self, PROGRAM):
@@ -490,18 +514,17 @@ class DatabaseManager:
         ans = self.cursor.execute(query).fetchone()
         
         query = f"""DELETE FROM OPTIMIZATIONS WHERE ID={ID};"""
-        print(query)
         self.cursor.execute(query)
         self.db.commit()
         
         path = []
-        path.append('database/optimizations/')
-        path.append(f"""{self.RetrieveProgram(ans[2])}/""")
-        path.append(f"""{self.RetrieveMachineData(ans[3])['NAME']}/""")
-        path.append(f"""{self.RetrieveAutotuningTech(ans[4])}/""")
+        path.append(f'{self.database}/optimizations/')
+        path.append(f"""{self.RetrieveProgram(ans[1])}/""")
+        path.append(f"""{self.RetrieveMachineData(ans[2])['NAME']}/""")
+        path.append(f"""{self.RetrieveAutotuningTech(ans[3])}/""")
         if ans[5] != 0:
-            path.append(f"""{self.RetrieveApproxTech(ans[5])}/""")
-            path.append(f"""{self.RetrieveTrainingDataData(ans[6])}/""")
+            path.append(f"""{self.RetrieveApproxTech(ans[4])}/""")
+            path.append(f"""{self.RetrieveDatasetData(ans[5])}/""")
         else:
             path.append(f"""NO_APPROXIMATION/""")
         path.append(str(ans[0])+'.parquet')
@@ -514,35 +537,28 @@ class DatabaseManager:
                 os.rmdir(''.join(path))
             path.pop()
 
-    def InsertTrainingData(self, NAME, PROGRAM, MACHINE, data):
-        query = f"""SELECT * FROM DATASETS WHERE (NAME='{NAME}' AND PROGRAM={PROGRAM} AND MACHINE={MACHINE});"""
-        ans = self.cursor.execute(query).fetchone()
-        if ans != None:
-            return ans[0]
-
-        query = f"""INSERT INTO DATASETS (NAME, PROGRAM, MACHINE) VALUES ('{NAME}', {PROGRAM}, {MACHINE});"""
+    def InsertDataset(self, NAME, PROGRAM, MACHINE, data):
+        query = f"""INSERT INTO DATASETS (NAME, PROGRAM, MACHINE) VALUES ('{NAME}', '{PROGRAM}', '{MACHINE}');"""
         self.cursor.execute(query)
         self.db.commit()
         id = self.cursor.lastrowid
-        path = f"""database/datasets/{self.RetrieveProgram(PROGRAM)}/{self.RetrieveMachineData(MACHINE)['NAME']}/"""
+        path = f"""{self.database}/datasets/{self.RetrieveProgram(PROGRAM)}/{self.RetrieveMachineData(MACHINE)['NAME']}/{NAME}/"""
         Path(path).mkdir(parents=True, exist_ok=True)
 
         dataset = pd.DataFrame(data)
-        dataset.to_parquet(path+NAME+'.parquet')
+        dataset.to_parquet(path+f'{id}'+'.parquet')
         return id
-    def RetrieveTrainingData(self, ID):
-        print(ID)
+    def RetrieveDataset(self, ID):
         query = f"""SELECT * FROM DATASETS WHERE ID = {ID};"""
         ans = self.cursor.execute(query).fetchone()
-        print(ans)
-        path = f"""database/datasets/{self.RetrieveProgram(ans[3])}/{self.RetrieveMachineData(ans[2])['NAME']}/{ans[1]}"""
-        dataframe = pd.read_parquet(path+'.parquet')
+        path = f"""{self.database}/datasets/{self.RetrieveProgram(ans[3])}/{self.RetrieveMachineData(ans[2])['NAME']}/{ans[1]}/"""
+        dataframe = pd.read_parquet(path+f'{ans[0]}' + '.parquet')
         return dataframe
-    def RetrieveTrainingDataData(self, ID):
+    def RetrieveDatasetData(self, ID):
         query = f"""SELECT * FROM DATASETS WHERE ID = {ID};"""
         ans = self.cursor.execute(query).fetchone()
         return ans[1]
-    def RemoveTrainingData(self, ID):
+    def RemoveDataset(self, ID):
         query = f"""SELECT (ID) FROM APPROXIMATIONS WHERE DATASET={ID};"""
         self.cursor.execute(query)
         children = self.cursor.fetchall()
@@ -555,14 +571,14 @@ class DatabaseManager:
         ans = self.cursor.execute(query).fetchone()
                         
         query = f"""DELETE FROM DATASETS WHERE ID={ID};"""
-        print(query)
         self.cursor.execute(query)
         self.db.commit()
         path = []
-        path.append('database/datasets/')
+        path.append(f'{self.database}/datasets/')
         path.append(f"""{self.RetrieveProgram(ans[2])}/""")
         path.append(f"""{self.RetrieveMachineData(ans[3])['NAME']}/""")
-        path.append(f"""{ans[1]}.parquet""")
+        path.append(f"""{ans[1]}/""")
+        path.append(f"""{ans[0]}.parquet""")
         os.remove(''.join(path))
         path.pop()
         while len(path) > 0:
@@ -572,23 +588,37 @@ class DatabaseManager:
                 os.rmdir(''.join(path))
             path.pop()
 
-    def InsertApproxHist(self, PROGRAM, DATASET, APPROXIMATION_TECHNIQUE, histories):
-        query = f"""INSERT INTO APPROXIMATIONS (PROGRAM, DATASET, TECHNIQUE) VALUES ({PROGRAM}, {DATASET}, {APPROXIMATION_TECHNIQUE});"""
+    def InsertApproxHist(self, PROGRAM, TRAINING_DATASET, TESTING_DATASET, APPROXIMATION_TECHNIQUE, training_values, testing_history):
+        print(f'program {PROGRAM}') 
+        print(f'training {TRAINING_DATASET}')
+        print(f'testing {TESTING_DATASET}')
+        print(f'approximator {APPROXIMATION_TECHNIQUE}')
+        print(f'TRAINING_TIME, TRAINING_ENERGY, TRAINING_TEMPERATURE, TRAINING_MEMORY {training_values}')
+        print(f'estimates {testing_history}')
+        query = f"""INSERT INTO APPROXIMATIONS (PROGRAM, TRAINING_DATASET, TESTING_DATASET, TECHNIQUE, TRAINING_TIME, TRAINING_ENERGY, TRAINING_TEMPERATURE, TRAINING_MEMORY) VALUES ({PROGRAM}, {TRAINING_DATASET}, {TESTING_DATASET}, {APPROXIMATION_TECHNIQUE}, {training_values[0]}, {training_values[1]}, {training_values[2]}, {training_values[3]});"""
         self.cursor.execute(query)
         self.db.commit()
         id = self.cursor.lastrowid
 
-        path = f"""database/approximations/{self.RetrieveProgram(PROGRAM)}/{self.RetrieveTrainingDataData(DATASET)}/{self.RetrieveApproxTech(APPROXIMATION_TECHNIQUE)}/"""
+        path = f"""{self.database}/approximations/{self.RetrieveProgram(PROGRAM)}/{self.RetrieveDatasetData(TRAINING_DATASET)}/{self.RetrieveDatasetData(TESTING_DATASET)}/{self.RetrieveApproxTech(APPROXIMATION_TECHNIQUE)}/"""
         Path(path).mkdir(parents=True, exist_ok=True)
-        histories= pd.DataFrame(histories)        
+        histories= pd.DataFrame(testing_history)        
         histories.to_parquet(path+str(id)+'.parquet')
         return id
     def RetrieveApproxHist(self, ID):
         query = f"""SELECT * FROM APPROXIMATIONS WHERE ID = {ID};"""
         ans = self.cursor.execute(query).fetchone()
-        path = f"""database/approximations/{self.RetrieveProgram(ans[1])}/{self.RetrieveTrainingDataData(ans[2])}/{self.RetrieveApproxTech(ans[3])}/{ans[0]}"""
+        path = f"""{self.database}/approximations/{self.RetrieveProgram(ans[1])}/{self.RetrieveDatasetData(ans[2])}/{self.RetrieveDatasetData(ans[3])}/{self.RetrieveApproxTech(ans[4])}/{ans[0]}"""
         dataframe = pd.read_parquet(path+'.parquet')
         return dataframe
+    def RetrieveApproxHistData(self, ID):
+        query = f"""SELECT * FROM APPROXIMATIONS WHERE ID = {ID};"""
+        ans = self.cursor.execute(query).fetchone()
+        return ans
+    def RetrieveProgramApproxHist(self, PROGRAM):
+        query = f"""SELECT * FROM APPROXIMATIONS WHERE (PROGRAM={PROGRAM});"""
+        ans = self.cursor.execute(query).fetchall()
+        return ans
     def RemoveApproxHist(self, ID):
         self.RemoveApproxPrec(ID)
         
@@ -596,14 +626,13 @@ class DatabaseManager:
         ans = self.cursor.execute(query).fetchone()
                 
         query = f"""DELETE FROM APPROXIMATIONS WHERE ID={ID};"""
-        print(query)
         self.cursor.execute(query)
         self.db.commit()
 
         path = []
-        path.append('database/approximations/')
+        path.append(f'{self.database}/approximations/')
         path.append(f"""{self.RetrieveProgram(ans[1])}/""")
-        path.append(f"""{self.RetrieveTrainingDataData(ans[2])}/""")
+        path.append(f"""{self.RetrieveDatasetData(ans[2])}/""")
         path.append(f"""{self.RetrieveApproxTech(ans[3])}/""")
         path.append(f"""{ans[0]}.parquet""")
         os.remove(''.join(path))
@@ -652,130 +681,5 @@ class DatabaseManager:
         return ans[1]
     def RemoveAutotuningPerf(self, ID):
         query = f"""DELETE FROM OPTIMIZATION_PERFORMANCE WHERE OPTIMIZATION={ID};"""
-        print(query)
         self.cursor.execute(query)
         self.db.commit()
-
-
-"""
-a = DatabaseManager()
-
-m = {
-    'NAME':                     'Windows',
-    'OS':                       'Windows',
-    'RELEASE':                  '2026-LTS-Slopified',
-    'VERSION':                  '333',
-    'PROCESSOR_ARCHITECTURE1':  'x86',
-    'PROCESSOR_ARCHITECTURE2':  '64-bits',
-    'INSTRUCTION_SET':          'Extra sloppy',
-    'CPU_CORES':                10,
-    'MEMORY':                   64000000000,
-    'NIC0':                     15000000,
-    'NIC1':                     7500000,
-    'NIC2':                     3750000,
-    'NIC3':                     0,
-    'NIC4':                     0,
-}
-print(a.InsertMachine(m))
-MACHINE_ID = a.RetrieveMachineID('Windows')
-print(MACHINE_ID)
-MACHINE = a.RetrieveMachineData(MACHINE_ID)
-print(MACHINE)
-
-
-a.InsertProgram('BlaBlaBlaBleBleBleBluBluBlu')
-PROGRAM_ID = a.RetrieveProgramID('BlaBlaBlaBleBleBleBluBluBlu')
-print(PROGRAM_ID)
-PROGRAM = a.RetrieveProgram(PROGRAM_ID)
-print(PROGRAM)
-
-a.InsertAutotuningTech('Particle Swarm Optimization')
-AUTOTUNING_TECHNIQUE_ID = a.RetrieveAutotuningTechID('Particle Swarm Optimization')
-print(AUTOTUNING_TECHNIQUE_ID)
-AUTOTUNING_TECHNIQUE = a.RetrieveAutotuningTech(AUTOTUNING_TECHNIQUE_ID)
-print(AUTOTUNING_TECHNIQUE)
-
-a.InsertApproxTech('Gaussian Processes')
-APPROXIMATION_TECHNIQUE_ID = a.RetrieveApproxTechID('Gaussian Processes')
-print(APPROXIMATION_TECHNIQUE_ID)
-APPROXIMATION_TECHNIQUE = a.RetrieveApproxTech(APPROXIMATION_TECHNIQUE_ID)
-print(APPROXIMATION_TECHNIQUE)
-
-training_data = {
-    'x':        [[1, 1, 1, 1, 1],
-                 [2, 2, 2, 2, 2],
-                 [3, 3, 3, 3, 3],
-                 [4, 4, 4, 4, 4],
-                 [5, 5, 5, 5, 5]],
-    'y':        [1, 2, 3, 4, 5]
-}
-DATASET = a.InsertTrainingData('aaaaa', PROGRAM_ID, MACHINE_ID, training_data)
-print(DATASET)
-print(a.RetrieveTrainingData(DATASET))
-
-historics = {
-    'execution':    [11, 21, 31, 41],
-    'time':         [21, 31, 41, 51],
-    'memory':       [31, 41, 51, 61],
-    'energy':       [41, 51, 61, 71],
-    'temperature':  [51, 61, 71, 81]
-}
-
-HISTORY_ID = a.InsertAutotuningHist(1, 1, 1, APPROXIMATION_TECHNIQUE_ID, DATASET, historics)
-print(HISTORY_ID)
-print(a.RetrieveAutotuningHist(HISTORY_ID))
-print(a.RetrieveAllAutotuningHistories(1, 1, 1, APPROXIMATION_TECHNIQUE_ID, DATASET))
-
-history = {
-    'entry':        [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]],
-    'value':        [1, 2, 3, 4],
-    'time':         [10, 11, 12, 13],
-    'memory':       [20, 21, 22, 23],
-    'energy':       [30, 40, 50, 60],
-    'temperature':  [40, 50, 60, 70]
-}
-APPROX_HIST_ID = a.InsertApproxHist(PROGRAM_ID, DATASET, APPROXIMATION_TECHNIQUE_ID, history)
-print(a.RetrieveApproxHist(APPROX_HIST_ID))
-history = {
-    'entry':        [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]],
-    'value':        [1, 2, 3, 4],
-    'time':         [10, 11, 12, 13],
-    'memory':       [20, 21, 22, 23],
-    'energy':       [30, 40, 50, 60],
-    'temperature':  [40, 50, 60, 70]
-}
-APPROX_HIST_ID = a.InsertApproxHist(PROGRAM_ID, DATASET, APPROXIMATION_TECHNIQUE_ID, history)
-print(a.RetrieveApproxHist(APPROX_HIST_ID))
-history = {
-    'entry':        [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]],
-    'value':        [1, 2, 3, 4],
-    'time':         [10, 11, 12, 13],
-    'memory':       [20, 21, 22, 23],
-    'energy':       [30, 40, 50, 60],
-    'temperature':  [40, 50, 60, 70]
-}
-APPROX_HIST_ID = a.InsertApproxHist(PROGRAM_ID, DATASET, APPROXIMATION_TECHNIQUE_ID, history)
-print(a.RetrieveApproxHist(APPROX_HIST_ID))
-
-APPROXIMATION_METRIC_ID = a.InsertApproxPrec(APPROX_HIST_ID, 999)
-print(APPROXIMATION_METRIC_ID)
-print(a.RetrieveApproxPrec(APPROXIMATION_METRIC_ID))
-APPROXIMATION_METRIC_ID = a.InsertApproxPrec(APPROX_HIST_ID, 111)
-print(APPROXIMATION_METRIC_ID)
-print(a.RetrieveApproxPrec(APPROXIMATION_METRIC_ID))
-
-AUTOTUNING_PERFORMANCE_ID = a.InsertAutotuningPerf(HISTORY_ID, 0)
-print(AUTOTUNING_PERFORMANCE_ID)
-print(a.RetrieveAutotuningPerf(AUTOTUNING_PERFORMANCE_ID))
-AUTOTUNING_PERFORMANCE_ID = a.InsertAutotuningPerf(HISTORY_ID, 1000)
-print(AUTOTUNING_PERFORMANCE_ID)
-print(a.RetrieveAutotuningPerf(AUTOTUNING_PERFORMANCE_ID))
-
-
-
-a.RemoveApproxTech(APPROXIMATION_TECHNIQUE_ID)
-a.RemoveAutotuningTech(AUTOTUNING_TECHNIQUE_ID)
-
-a.RemoveProgram(PROGRAM_ID)
-a.RemoveMachine(MACHINE_ID)
-"""
