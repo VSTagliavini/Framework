@@ -4,7 +4,7 @@ import types
 import time
 import gc
 import os
-import platform
+
 
 import pyRAPL
 from pympler import asizeof
@@ -12,10 +12,8 @@ import psutil
 import numpy as np
 from progress.bar import Bar
 
-from database.DatabaseManager import DatabaseManager, CheckString
-
-#REMOVE LATER
-import json
+from database.DatabaseManager import DatabaseManager, CheckString, GetMachine
+from approximation_recorder import Approximator
 
 # - FLOPS: floppy or flopscope
 #          if all else fails: FLOPS = elapsed_time * CPU maximum FLOPs * CPU utilization
@@ -26,7 +24,7 @@ class Optimizer:
     #One 'loop' of the program's optimization
     #Will be called until optimization budget is exceeded
     def Optimize(self):
-        pass
+        raise Exception('method Optimizer.Optimizer must be overwritten')
     #Defines the function to be optimized
     #Must receive function and number of parameters
     def SetObjectiveFunction(self, func, params):
@@ -37,22 +35,13 @@ class Optimizer:
         CheckString(name, 'Optimizer')
         self.name = name
 
-class Estimator:
-    #One 'loop' of the program's approximation training
-    #Will be called until optimization budget is exceeded
-    def Train(self):
-        pass
-    #One approximation of the program
-    def Estimate(self):
-        pass
-
-class Recorder:
+class OptimizationRecorder:
     def __init__(self, device_name, objective_function, num_parameters, estimator=None, measure_optimizing_history=False, measure_flops=False, measure_time=False, measure_memory=False, measure_energy=False, measure_temperature=False, database=None):
         CheckString(device_name, 'device_name')
         self.device_name = device_name
 
         if type(objective_function) != types.FunctionType:
-            raise Exception(f'function must be of type function, received {type(objective_function)} - {objective_function}')
+            raise Exception(f'objective_function must be of type function, received {type(objective_function)} - {objective_function}')
         self.function = objective_function
         
         if not isinstance(num_parameters, int):
@@ -64,7 +53,7 @@ class Recorder:
         if estimator == None:
             self.use_estimator = False
         else:
-            if not issubclass(type(estimator), Estimator):
+            if not issubclass(type(estimator), Approximator):
                 raise Exception(f'estimator must be subclass of Estimator')
             self.use_estimator = True
             self.estimator = estimator
@@ -167,13 +156,6 @@ class Recorder:
     #value = self._evaluate_function(x)
     #if measures flops:     start flops measurement
 
-    #Uses self.estimator to approximate self.function
-    #Trains the model for a given amount of function evaluations, time elapsed (flops?) or until a given speedup is achieved
-    #Measures specificed performance metrics
-    #Additionally, may approximate function several times to check consistency
-    def TrainEstimator(self):
-        pass
-
     #Uses self.optimizer to optimize the self.function
     #Optimizes for a given amount of function evaluations, time elapsed (flops?) or until a given speedup is achieved
     #Measures specificed performance metrics
@@ -259,28 +241,7 @@ class Recorder:
             self.temperatures[self.current_operation] = []
 
     def _save_machine(self):
-        net_stats = psutil.net_if_stats()
-        net_speeds = [net_stats[a].mtu for a in net_stats]
-        while len(net_speeds) < 5:
-            net_speeds.append(0)
-        
-        m = {
-            'NAME':                     self.device_name,
-            'OS':                       platform.system()[0:32],
-            'RELEASE':                  platform.release()[0:32],
-            'VERSION':                  platform.version()[0:32],
-            'PROCESSOR_ARCHITECTURE1':  platform.architecture()[0][0:32],
-            'PROCESSOR_ARCHITECTURE2':  platform.architecture()[1][0:32],
-            'INSTRUCTION_SET':          platform.machine()[0:32],
-            'CPU_CORES':                psutil.cpu_count(),
-            'MEMORY':                   psutil.virtual_memory().total,
-            'NIC0':                     net_speeds[0],
-            'NIC1':                     net_speeds[1],
-            'NIC2':                     net_speeds[2],
-            'NIC3':                     net_speeds[3],
-            'NIC4':                     net_speeds[4],
-        }
-        self.machine = self.db.InsertMachine(m)
+        self.machine = self.db.InsertMachine(GetMachine(self.device_name))
 
     def _save_optimization_history(self):
         history = {}
@@ -301,26 +262,4 @@ class Recorder:
         self.db.InsertAutotuningHist(self.program, self.optimization, self.machine, None, None, history)
 
 
-        #Export performance metrics, optimization and estimation algorithms used, and system information
-        #Also export additional data provided by the user (such as if it used a container or virtual machine)
-        #Exports to a small SQL database
-#    def Export_Measurements(self):
-#        #Maybe update to retrieve additional information through OS specific APIs
-#
-#        #TEMPORARY
-#        
-#
-#        output = {}
-#        if self.measure_history:
-#            output['histories'] = self.histories
-#        if self.measure_time:
-#            output['times'] = self.times
-#        if self.measure_memory:
-#            output['memories'] = self.memories
-#        if self.measure_energy:
-#            output['energies'] = self.energies
-#        if self.measure_temperature:
-#            output['temperatures'] = self.temperatures
-#        with open('temporary_output.json', 'w') as save_file:
-#            json.dump(output, save_file, indent=4)
 
