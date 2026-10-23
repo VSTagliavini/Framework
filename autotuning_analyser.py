@@ -10,7 +10,7 @@ def MAD(values):
     distances = [abs(v - mean) for v in values]
     return np.average(distances)
 
-class Analyser:
+class AutotuningAnalyser:
     def __init__(self, database=None):
         if database == None:
             self.db = DatabaseManager()
@@ -18,6 +18,7 @@ class Analyser:
             CheckString(database)
             self.db = DatabaseManager()
     def GetIterationsToImprovement(self, data):
+        data = self.db.RetrieveAutotuningHist(data)
         #Returns a list of the best solutions found by the algorihtm and how long they stayed the best solution
         iterations = 1
         d = [[data['data']['value'][0], 0]]
@@ -48,6 +49,7 @@ class Analyser:
                         entry.append(-alg[0])
                 else:
                     if objectives[obj] == 'smaller':
+                        print(alg[1][0])
                         entry.append(alg[1][0][obj])
                     else:
                         entry.append(-alg[1][0][obj])
@@ -81,12 +83,13 @@ class Analyser:
             if column not in data['data'].columns:
                 data['data'].insert(data['data'].shape[1], column, [-1] * data['data'].shape[0])
         return data
-    def CheckConvergence(self, data, i=100, goal='iterations', iterations=50):
+    def CheckConvergence(self, opt, i=100, goal='iterations', iterations=50):
+        data = self.db.RetrieveAutotuningHist(opt)
         #Checks if the algorithm converged by:
         #- Not improvig it's solution for a number of iterations
         #- Achieving a solution equal to or smalller than a given value
         if goal in ['iterations', 'value']:
-            data = self.GetIterationsToImprovement(data)
+            data = self.GetIterationsToImprovement(opt)
         if goal == 'step':
             data = self._get_value_change(data)
 
@@ -130,8 +133,8 @@ class Analyser:
             data = self.GetOptimization(opt)
             datas.append(data)
             steps = self._get_value_change(data)
-            best_values = self.GetIterationsToImprovement(data)
-            convergence = self.CheckConvergence(data, conv_i, conv_g, conv_it)
+            best_values = self.GetIterationsToImprovement(opt)
+            convergence = self.CheckConvergence(opt, conv_i, conv_g, conv_it)
 
             basic_metrics.append({
                 'sol': best_values[-1][0],
@@ -352,6 +355,8 @@ class Analyser:
         #Measures the differences between solutions tested by the algorithm across multiple optimizations
         #Measures differences on inputs or outputs across a moving window
 
+        data = self.db.RetrieveAutotuningHist(data)
+
         diversities = []
         pos = 0
         while pos+window <= data['data'].shape[0]:
@@ -390,9 +395,11 @@ class Analyser:
             pos = pos + window
             diversities.append(diversity)
         return diversities
-        pass
     def GetParetoSet(self, data, objectives, points):
         values = [self.GetIterationsToImprovement(d) for d in data]
+
+        data = [self.db.RetrieveAutotuningHist(d) for d in data]
+
         for value in values:
             value[0][1] = value[0][1] - 1
             for i in range(1, len(value)):
@@ -421,3 +428,4 @@ class Analyser:
                     pareto_set = [p for p in pareto_set if not ((all(algs[alg][i] <= p[1][i] for i in range(len(objectives)))) and any(algs[alg][i] < p[1][i] for i in range(len(objectives))))]
             pareto_sets[point] = pareto_set
         return pareto_sets  
+
